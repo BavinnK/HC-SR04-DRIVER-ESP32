@@ -1,4 +1,3 @@
-#include "driver/ledc.h"
 volatile unsigned long start_time = 0;
 #define trigPin 5
 #define echopin 18
@@ -9,7 +8,7 @@ volatile unsigned long start_time = 0;
 
 
 
-
+SemaphoreHandle_t emergency_stop;
 QueueHandle_t distanceQueue;
 
 void ultra_sonic_task(void *pvParameters) {
@@ -38,10 +37,16 @@ void IRAM_ATTR echo_ISR() {
   }
 }
 void motor_task(void *pvParameters) {
+
   ledcSetup(CH_0, freq, res);
   ledcAttachPin(F_PIN, CH_0);
   unsigned long distance_raw;
   for (;;) {
+    if (xSemaphoreTake(emergency_stop, 0) == pdTRUE) {
+      Serial.println("Emergency stop activated, motors are off! ");
+      ledcWrite(CH_0, 0);
+      while (1) { vTaskDelay(1000 / portTICK_PERIOD_MS); }
+    }
     if (xQueueReceive(distanceQueue, &distance_raw, 10) == pdTRUE) {
       unsigned long distance_data_cm = distance_raw / 58;
       if (distance_data_cm > 20) {
@@ -52,13 +57,21 @@ void motor_task(void *pvParameters) {
     }
   }
 }
+void emergency_stop_task(void *pvParameters) {
+  vTaskDelay(5000 / portTICK_PERIOD_MS);
+  Serial.println("Emergency stop activated, Termination begun! ");
+  xSemaphoreGive(emergency_stop);
+  vTaskDelete(NULL);
+}
 void setup() {
   pinMode(trigPin, OUTPUT);
   pinMode(echopin, INPUT);
   attachInterrupt(echopin, echo_ISR, CHANGE);
-
+  emergency_stop = xSemaphoreCreateBinary();
   distanceQueue = xQueueCreate(10, sizeof(unsigned long));
-  xTaskCreatePinnedToCore(ultra_sonic_task, "ultraSonicTask", 4096, NULL, 2, NULL, 0);
+  Serial.begin(115200);
+  xTaskCreatePinnedToCore(emergency_stop_task, "EmergencyStopTask", 1096, NULL, 3, NULL, 1);
+  xTaskCreatePinnedToCore(ultra_sonic_task, "UltraSonicTask", 4096, NULL, 2, NULL, 0);
   xTaskCreatePinnedToCore(motor_task, "MotorRunningTask", 4096, NULL, 2, NULL, 1);
 }
 
